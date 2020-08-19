@@ -1,32 +1,41 @@
 package rfcache
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"time"
 )
 
 // Server http
 type Server struct {
 	httpSrv *http.Server
+	node    *RaftNode
 	cache   *Cache
 }
 
 // NewServer create server
-func NewServer(opts *Options) *Server {
+func NewServer(opts *Options) (*Server, error) {
 
 	mux := gin.New()
+	cache := NewCache()
+	raftNode, err := NewRaftNode(opts, cache)
+	if err != nil {
+		return nil, err
+	}
 	srv := &Server{
 		httpSrv: &http.Server{
 			Addr:    fmt.Sprintf("%s:%d", opts.Addr, opts.APIPort),
 			Handler: mux,
 		},
-		cache: NewCache(),
+		cache: cache,
+		node:  raftNode,
 	}
 	mux.GET("/get", srv.GetCache)
 	mux.POST("/set", srv.SetCache)
 
-	return srv
+	return srv, nil
 }
 
 // Run server
@@ -78,7 +87,17 @@ func (s *Server) SetCache(c *gin.Context) {
 		c.JSON(400, gin.H{"code": 1, "error_messaage": "value is empty", "data": []interface{}{}})
 		return
 	}
-	s.cache.Set(key, value)
+
+	event := logEntryData{Key: key, Value: value}
+	eventJSON, err := json.Marshal(event)
+	if err != nil {
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "json marshal err" + err.Error(), "data": []interface{}{}})
+	}
+	applyFuture := s.node.raft.Apply(eventJSON, 5*time.Second)
+
+	if err := applyFuture.Error(); err != nil {
+		c.JSON(200, gin.H{"code": 1, "error_messaage": "raft apply err" + err.Error(), "data": []interface{}{}})
+	}
 
 	c.JSON(200, gin.H{
 		"code":           0,
