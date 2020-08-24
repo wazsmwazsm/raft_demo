@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/hashicorp/raft"
 	"net/http"
 	"time"
 )
@@ -34,6 +35,7 @@ func NewServer(opts *Options) (*Server, error) {
 	}
 	mux.GET("/get", srv.GetCache)
 	mux.POST("/set", srv.SetCache)
+	mux.POST("/join", srv.Join)
 
 	return srv, nil
 }
@@ -50,7 +52,7 @@ func (s *Server) Run() error {
 func (s *Server) GetCache(c *gin.Context) {
 	key := c.Query("key")
 	if key == "" {
-		c.JSON(400, gin.H{"code": 1, "error_messaage": "key is empty", "data": []interface{}{}})
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "key is empty", "data": struct{}{}})
 		return
 	}
 
@@ -73,35 +75,68 @@ func (s *Server) SetCache(c *gin.Context) {
 	var req setReq
 	err := c.BindJSON(&req)
 	if err != nil {
-		c.JSON(400, gin.H{"code": 1, "error_messaage": "json parse err:" + err.Error(), "data": []interface{}{}})
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "json parse err:" + err.Error(), "data": struct{}{}})
 		return
 	}
 
 	key := req.Key
 	if key == "" {
-		c.JSON(400, gin.H{"code": 1, "error_messaage": "key is empty", "data": []interface{}{}})
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "key is empty", "data": struct{}{}})
 		return
 	}
 	value := req.Value
 	if value == "" {
-		c.JSON(400, gin.H{"code": 1, "error_messaage": "value is empty", "data": []interface{}{}})
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "value is empty", "data": struct{}{}})
 		return
 	}
 
 	event := logEntryData{Key: key, Value: value}
 	eventJSON, err := json.Marshal(event)
 	if err != nil {
-		c.JSON(400, gin.H{"code": 1, "error_messaage": "json marshal err" + err.Error(), "data": []interface{}{}})
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "json marshal err" + err.Error(), "data": struct{}{}})
 	}
 	applyFuture := s.node.raft.Apply(eventJSON, 5*time.Second)
 
 	if err := applyFuture.Error(); err != nil {
-		c.JSON(200, gin.H{"code": 1, "error_messaage": "raft apply err" + err.Error(), "data": []interface{}{}})
+		c.JSON(200, gin.H{"code": 1, "error_messaage": "raft apply err" + err.Error(), "data": struct{}{}})
 	}
 
 	c.JSON(200, gin.H{
 		"code":           0,
 		"error_messaage": "",
-		"data":           []interface{}{},
+		"data":           struct{}{},
+	})
+}
+
+type joinReq struct {
+	PeerAddress string `json:"peer_address"`
+}
+
+// Join node to cluster
+func (s *Server) Join(c *gin.Context) {
+	var req joinReq
+	err := c.BindJSON(&req)
+	if err != nil {
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "json parse err:" + err.Error(), "data": struct{}{}})
+		return
+	}
+
+	peerAddress := req.PeerAddress
+	if peerAddress == "" {
+		c.JSON(400, gin.H{"code": 1, "error_messaage": "peerAddress is empty", "data": struct{}{}})
+		return
+	}
+
+	addPeerFuture := s.node.raft.AddVoter(raft.ServerID(peerAddress), raft.ServerAddress(peerAddress), 0, time.Second)
+	if err := addPeerFuture.Error(); err != nil {
+
+		c.JSON(200, gin.H{"code": 1, "error_messaage": "fail joining peer to raft: " + err.Error(), "data": struct{}{}})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"code":           0,
+		"error_messaage": "",
+		"data":           struct{}{},
 	})
 }
